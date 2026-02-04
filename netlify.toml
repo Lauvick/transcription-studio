@@ -1,0 +1,13 @@
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[[redirects]]
+  from = "/api/*"
+  to = "https://votre-backend.railway.app/api/:splat"
+  status = 200
+  force = true
+
+[build.environment]
+  NODE_VERSION = "18"
+
