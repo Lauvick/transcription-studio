@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import { readHistory } from "@/lib/history";
 
@@ -15,9 +16,8 @@ export async function GET() {
   } catch (error: any) {
     console.error("Export history error:", error);
     return NextResponse.json(
-      { error: `Erreur serveur: ${error.message}` },
+      { error: `Server error: ${error.message}` },
       { status: 500 }
     );
   }
 }
-

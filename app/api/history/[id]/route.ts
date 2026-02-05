@@ -1,6 +1,8 @@
-import { NextRequest, NextResponse } from "next/server";
-import { deleteHistoryItem, readHistory } from "@/lib/history";
 
+import { NextRequest, NextResponse } from "next/server";
+import { deleteHistoryItem, getHistoryItem } from "@/lib/history";
+
+// DELETE /api/history/[id] - Deletes a specific history item
 export async function DELETE(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -11,33 +13,33 @@ export async function DELETE(
 
     if (!deleted) {
       return NextResponse.json(
-        { error: "Item introuvable" },
+        { error: "Item not found" },
         { status: 404 }
       );
     }
 
-    return NextResponse.json({ message: "Item supprimé" });
+    return NextResponse.json({ message: "Item deleted" });
   } catch (error: any) {
     console.error("Delete history item error:", error);
     return NextResponse.json(
-      { error: `Erreur serveur: ${error.message}` },
+      { error: `Server error: ${error.message}` },
       { status: 500 }
     );
   }
 }
 
+// GET /api/history/[id] - Fetches a specific history item
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
     const { id } = params;
-    const history = await readHistory();
-    const item = history.find((item) => item.id === id);
+    const item = await getHistoryItem(id);
 
     if (!item) {
       return NextResponse.json(
-        { error: "Item introuvable" },
+        { error: "Item not found" },
         { status: 404 }
       );
     }
@@ -46,9 +48,8 @@ export async function GET(
   } catch (error: any) {
     console.error("Get history item error:", error);
     return NextResponse.json(
-      { error: `Erreur serveur: ${error.message}` },
+      { error: `Server error: ${error.message}` },
       { status: 500 }
     );
   }
 }
-

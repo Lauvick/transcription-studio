@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS history (
+    id VARCHAR(255) PRIMARY KEY,
+    status VARCHAR(255),
+    url VARCHAR(255),
+    transcript TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);

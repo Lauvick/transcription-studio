@@ -1,3 +1,6 @@
+// Charger les variables d'environnement depuis .env.local
+require('dotenv').config({ path: require('path').join(process.cwd(), '.env.local') });
+
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
@@ -662,4 +665,3 @@ app.listen(PORT, () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📊 Health check available at http://localhost:${PORT}/api/infos`);
 });
-

@@ -1,39 +1,39 @@
+
 import { NextRequest, NextResponse } from "next/server";
 import { importHistory } from "@/lib/history";
 import { z } from "zod";
 
+// This schema validates the structure of each item in the imported JSON file.
 const historyItemSchema = z.object({
   id: z.string(),
-  type: z.enum(["transcription", "text"]),
-  text: z.string(),
-  language: z.string().optional(),
-  languageCodes: z.array(z.string()).optional(),
-  createdAt: z.string(),
-  metadata: z.any().optional(),
+  status: z.string(),
+  url: z.string().url(),
+  transcript: z.string(),
+  created_at: z.string().datetime(), // Ensures created_at is a valid ISO 8601 date string
 });
 
+// The body of the POST request should be an array of history items.
 const importSchema = z.array(historyItemSchema);
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const validated = importSchema.parse(body);
+    const validatedItems = importSchema.parse(body);
 
-    await importHistory(validated);
-    return NextResponse.json({ message: "Historique importé avec succès" });
+    await importHistory(validatedItems);
+    return NextResponse.json({ message: "History imported successfully" });
   } catch (error: any) {
     if (error instanceof z.ZodError) {
       return NextResponse.json(
-        { error: "Format JSON invalide", details: error.errors },
+        { error: "Invalid JSON format", details: error.errors },
         { status: 400 }
       );
     }
 
     console.error("Import history error:", error);
     return NextResponse.json(
-      { error: `Erreur serveur: ${error.message}` },
+      { error: `Server error: ${error.message}` },
       { status: 500 }
     );
   }
 }
-

@@ -1,137 +1,58 @@
-import { promises as fs } from "fs";
-import path from "path";
 
-const HISTORY_FILE = path.join(process.cwd(), "data", "transcriptions.json");
-const MAX_ITEMS = 5;
+import { getDB } from './db';
 
 export interface HistoryItem {
   id: string;
-  type: "transcription" | "text";
-  text: string;
-  language?: string;
-  languageCodes?: string[];
-  createdAt: string;
-  metadata?: {
-    filename?: string;
-    speakerLabels?: boolean;
-    punctuate?: boolean;
-  };
-}
-
-let fileLock = false;
-const lockQueue: Array<() => void> = [];
-
-async function acquireLock(): Promise<() => void> {
-  return new Promise((resolve) => {
-    if (!fileLock) {
-      fileLock = true;
-      resolve(() => {
-        fileLock = false;
-        if (lockQueue.length > 0) {
-          const next = lockQueue.shift();
-          if (next) next();
-        }
-      });
-    } else {
-      lockQueue.push(() => {
-        fileLock = true;
-        resolve(() => {
-          fileLock = false;
-          if (lockQueue.length > 0) {
-            const next = lockQueue.shift();
-            if (next) next();
-          }
-        });
-      });
-    }
-  });
-}
-
-async function ensureDataDir(): Promise<void> {
-  const dataDir = path.dirname(HISTORY_FILE);
-  try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
-  }
+  status: string;
+  url: string;
+  transcript: string;
+  created_at: string;
 }
 
 export async function readHistory(): Promise<HistoryItem[]> {
-  const release = await acquireLock();
-  try {
-    await ensureDataDir();
-    try {
-      const content = await fs.readFile(HISTORY_FILE, "utf-8");
-      const data = JSON.parse(content);
-      return Array.isArray(data) ? data : [];
-    } catch (error: any) {
-      if (error.code === "ENOENT") {
-        return [];
-      }
-      throw error;
-    }
-  } finally {
-    release();
-  }
+  const db = getDB();
+  const { rows } = await db.query('SELECT * FROM history ORDER BY created_at DESC');
+  return rows;
 }
 
-export async function writeHistory(items: HistoryItem[]): Promise<void> {
-  const release = await acquireLock();
-  try {
-    await ensureDataDir();
-    await fs.writeFile(HISTORY_FILE, JSON.stringify(items, null, 2), "utf-8");
-  } finally {
-    release();
-  }
+export async function getHistoryItem(id: string): Promise<HistoryItem | null> {
+  const db = getDB();
+  const { rows } = await db.query('SELECT * FROM history WHERE id = $1', [id]);
+  return rows[0] || null;
 }
 
-export async function addHistoryItem(item: HistoryItem): Promise<void> {
-  const release = await acquireLock();
-  try {
-    const history = await readHistory();
-    const updated = [item, ...history]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, MAX_ITEMS);
-    await writeHistory(updated);
-  } finally {
-    release();
-  }
+export async function addHistoryItem(item: Omit<HistoryItem, 'created_at'>): Promise<void> {
+  const db = getDB();
+  await db.query(
+    'INSERT INTO history (id, status, url, transcript) VALUES ($1, $2, $3, $4)',
+    [item.id, item.status, item.url, item.transcript]
+  );
 }
 
 export async function deleteHistoryItem(id: string): Promise<boolean> {
-  const release = await acquireLock();
-  try {
-    const history = await readHistory();
-    const filtered = history.filter((item) => item.id !== id);
-    if (filtered.length === history.length) {
-      return false;
-    }
-    await writeHistory(filtered);
-    return true;
-  } finally {
-    release();
-  }
+  const db = getDB();
+  const result = await db.query('DELETE FROM history WHERE id = $1', [id]);
+  return !!result.rowCount;
 }
 
 export async function clearHistory(): Promise<void> {
-  const release = await acquireLock();
-  try {
-    await writeHistory([]);
-  } finally {
-    release();
-  }
+  const db = getDB();
+  await db.query('DELETE FROM history');
 }
 
 export async function importHistory(items: HistoryItem[]): Promise<void> {
-  const release = await acquireLock();
-  try {
-    const existing = await readHistory();
-    const merged = [...items, ...existing]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, MAX_ITEMS);
-    await writeHistory(merged);
-  } finally {
-    release();
-  }
+    const db = getDB();
+    const client = await db.connect();
+    try {
+        await client.query('BEGIN');
+        for (const item of items) {
+            await client.query('INSERT INTO history (id, status, url, transcript, created_at) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING', [item.id, item.status, item.url, item.transcript, item.created_at]);
+        }
+        await client.query('COMMIT');
+    } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+    } finally {
+        client.release();
+    }
 }
-
