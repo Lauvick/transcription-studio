@@ -1,3 +1,4 @@
+
 // Charger les variables d'environnement depuis .env.local
 require('dotenv').config({ path: require('path').join(process.cwd(), '.env.local') });
 
@@ -7,11 +8,39 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs").promises;
 const crypto = require("crypto");
+const { Pool } = require('pg');
+
+// Configuration de la base de données
+const pool = new Pool({
+  connectionString: process.env.POSTGRES_URL,
+  ssl: {
+    rejectUnauthorized: false
+  }
+});
+
+async function initializeDatabase() {
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS history (
+        id UUID PRIMARY KEY,
+        type VARCHAR(255) NOT NULL,
+        text TEXT NOT NULL,
+        language VARCHAR(10),
+        language_codes VARCHAR(255),
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+  } finally {
+    client.release();
+  }
+}
 
 const app = express();
 const PORT = process.env.PORT || 5005;
 
-// Middleware CORS - configuré pour la production
+// Middleware CORS
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   "http://localhost:3005",
@@ -20,9 +49,7 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Permettre les requêtes sans origin (mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) !== -1 || !process.env.FRONTEND_URL) {
+    if (!origin || allowedOrigins.indexOf(origin) !== -1 || !process.env.FRONTEND_URL) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
@@ -32,20 +59,17 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Configuration multer pour l'upload
+// Configuration multer
 const upload = multer({ storage: multer.memoryStorage() });
 
 const ASSEMBLYAI_UPLOAD_URL = "https://api.assemblyai.com/v2/upload";
 const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2/transcript";
 
-// Fichier de configuration pour la clé API
 const API_KEY_FILE = path.join(process.cwd(), "config", "api-key.json");
 const ENV_FILE = path.join(process.cwd(), ".env.local");
 
-// Fonction pour lire la clé API
 async function getApiKey() {
   try {
-    // Essayer de lire depuis le fichier de config
     try {
       const configContent = await fs.readFile(API_KEY_FILE, "utf-8");
       const config = JSON.parse(configContent);
@@ -56,7 +80,6 @@ async function getApiKey() {
       // Fichier n'existe pas, continuer
     }
 
-    // Essayer de lire depuis .env.local
     try {
       const envContent = await fs.readFile(ENV_FILE, "utf-8");
       const lines = envContent.split("\n");
@@ -69,7 +92,6 @@ async function getApiKey() {
       // Fichier n'existe pas, continuer
     }
 
-    // Fallback sur process.env
     return process.env.ASSEMBLYAI_API_KEY || null;
   } catch (error) {
     console.error("Error reading API key:", error);
@@ -77,10 +99,8 @@ async function getApiKey() {
   }
 }
 
-// Fonction pour sauvegarder la clé API
 async function saveApiKey(apiKey) {
   try {
-    // Créer le dossier config s'il n'existe pas
     const configDir = path.dirname(API_KEY_FILE);
     try {
       await fs.access(configDir);
@@ -88,14 +108,12 @@ async function saveApiKey(apiKey) {
       await fs.mkdir(configDir, { recursive: true });
     }
 
-    // Sauvegarder dans le fichier de config
     await fs.writeFile(
       API_KEY_FILE,
       JSON.stringify({ ASSEMBLYAI_API_KEY: apiKey }, null, 2),
       "utf-8"
     );
 
-    // Mettre à jour .env.local aussi
     try {
       let envContent = "";
       try {
@@ -118,7 +136,6 @@ async function saveApiKey(apiKey) {
         newLines.push(`ASSEMBLYAI_API_KEY=${apiKey}`);
       }
 
-      // Ajouter NEXT_PUBLIC_API_URL s'il n'existe pas
       if (!newLines.some((line) => line.startsWith("NEXT_PUBLIC_API_URL="))) {
         newLines.push("NEXT_PUBLIC_API_URL=http://localhost:5005");
       }
@@ -142,7 +159,6 @@ app.get("/api/config/api-key", async (req, res) => {
     if (!apiKey) {
       return res.json({ apiKey: null, configured: false });
     }
-    // Masquer la clé (afficher seulement les 4 premiers et 4 derniers caractères)
     const masked = apiKey.length > 8 
       ? `${apiKey.substring(0, 4)}${"*".repeat(apiKey.length - 8)}${apiKey.substring(apiKey.length - 4)}`
       : "****";
@@ -319,195 +335,11 @@ app.get("/api/assemblyai/transcripts/:id", async (req, res) => {
   }
 });
 
-// Utilitaires pour l'historique
-const HISTORY_FILE = path.join(process.cwd(), "data", "transcriptions.json");
-const MAX_ITEMS = 5;
-
-let fileLock = false;
-const lockQueue = [];
-
-function acquireLock() {
-  return new Promise((resolve) => {
-    if (!fileLock) {
-      fileLock = true;
-      resolve(() => {
-        fileLock = false;
-        if (lockQueue.length > 0) {
-          const next = lockQueue.shift();
-          if (next) next();
-        }
-      });
-    } else {
-      lockQueue.push(() => {
-        fileLock = true;
-        resolve(() => {
-          fileLock = false;
-          if (lockQueue.length > 0) {
-            const next = lockQueue.shift();
-            if (next) next();
-          }
-        });
-      });
-    }
-  });
-}
-
-async function ensureDataDir() {
-  const dataDir = path.dirname(HISTORY_FILE);
-  try {
-    await fs.access(dataDir);
-  } catch {
-    await fs.mkdir(dataDir, { recursive: true });
-  }
-}
-
-async function readHistory() {
-  const release = await acquireLock();
-  try {
-    await ensureDataDir();
-    try {
-      const content = await fs.readFile(HISTORY_FILE, "utf-8");
-      const data = JSON.parse(content);
-      return Array.isArray(data) ? data : [];
-    } catch (error) {
-      if (error.code === "ENOENT") {
-        // Créer le fichier avec un tableau vide s'il n'existe pas
-        console.log("History file does not exist, creating it...");
-        await fs.writeFile(HISTORY_FILE, JSON.stringify([], null, 2), "utf-8");
-        return [];
-      }
-      // Si c'est une erreur de parsing JSON, créer un nouveau fichier
-      if (error instanceof SyntaxError) {
-        console.log("History file has invalid JSON, recreating it...");
-        await fs.writeFile(HISTORY_FILE, JSON.stringify([], null, 2), "utf-8");
-        return [];
-      }
-      throw error;
-    }
-  } finally {
-    release();
-  }
-}
-
-async function writeHistory(items) {
-  const release = await acquireLock();
-  try {
-    console.log("writeHistory - Writing", items.length, "items to", HISTORY_FILE);
-    await ensureDataDir();
-    
-    // Vérifier que le dossier existe
-    const dataDir = path.dirname(HISTORY_FILE);
-    try {
-      await fs.access(dataDir);
-      console.log("writeHistory - Data directory exists:", dataDir);
-    } catch {
-      console.log("writeHistory - Creating data directory:", dataDir);
-      await fs.mkdir(dataDir, { recursive: true });
-    }
-    
-    const content = JSON.stringify(items, null, 2);
-    console.log("writeHistory - Content length:", content.length, "bytes");
-    
-    await fs.writeFile(HISTORY_FILE, content, "utf-8");
-    
-    // Vérifier que le fichier existe maintenant
-    try {
-      const stats = await fs.stat(HISTORY_FILE);
-      console.log("writeHistory - File written successfully, size:", stats.size, "bytes");
-    } catch (err) {
-      console.error("writeHistory - ERROR: File does not exist after write!", err);
-      throw new Error("File was not created after write operation");
-    }
-  } catch (error) {
-    console.error("writeHistory - Error:", error);
-    console.error("writeHistory - Error details:", {
-      message: error.message,
-      code: error.code,
-      path: error.path,
-    });
-    throw error;
-  } finally {
-    release();
-  }
-}
-
-async function addHistoryItem(item) {
-  const release = await acquireLock();
-  try {
-    console.log("addHistoryItem - Starting, item:", { id: item.id, type: item.type, textLength: item.text?.length });
-    const history = await readHistory();
-    console.log("addHistoryItem - Current history length:", history.length);
-    
-    // Ajouter le nouvel item au début
-    const updated = [item, ...history]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, MAX_ITEMS);
-    
-    console.log("addHistoryItem - Updated history length:", updated.length);
-    console.log("addHistoryItem - About to write to:", HISTORY_FILE);
-    
-    await writeHistory(updated);
-    
-    // Vérifier que le fichier a bien été écrit
-    const verify = await readHistory();
-    console.log("addHistoryItem - Verification: history now has", verify.length, "items");
-    
-    if (verify.length === 0 && updated.length > 0) {
-      console.error("addHistoryItem - WARNING: File was written but verification shows empty array!");
-    }
-    
-    console.log("addHistoryItem - History written successfully");
-  } catch (error) {
-    console.error("addHistoryItem - Error:", error);
-    console.error("addHistoryItem - Error stack:", error.stack);
-    throw error;
-  } finally {
-    release();
-  }
-}
-
-async function deleteHistoryItem(id) {
-  const release = await acquireLock();
-  try {
-    const history = await readHistory();
-    const filtered = history.filter((item) => item.id !== id);
-    if (filtered.length === history.length) {
-      return false;
-    }
-    await writeHistory(filtered);
-    return true;
-  } finally {
-    release();
-  }
-}
-
-async function clearHistory() {
-  const release = await acquireLock();
-  try {
-    await writeHistory([]);
-  } finally {
-    release();
-  }
-}
-
-async function importHistory(items) {
-  const release = await acquireLock();
-  try {
-    const existing = await readHistory();
-    const merged = [...items, ...existing]
-      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-      .slice(0, MAX_ITEMS);
-    await writeHistory(merged);
-  } finally {
-    release();
-  }
-}
-
 // Routes Historique
 app.get("/api/history", async (req, res) => {
   try {
-    const history = await readHistory();
-    res.json(history);
+    const { rows } = await pool.query('SELECT * FROM history ORDER BY created_at DESC');
+    res.json(rows);
   } catch (error) {
     console.error("Read history error:", error);
     res.status(500).json({ error: `Erreur serveur: ${error.message}` });
@@ -518,27 +350,25 @@ app.post("/api/history", async (req, res) => {
   try {
     const { type, text, language, languageCodes, metadata } = req.body;
 
-    console.log("POST /api/history - Received:", { type, textLength: text?.length, language, languageCodes, metadata });
-
     if (!type || !text) {
-      console.error("Missing required fields:", { type, hasText: !!text });
       return res.status(400).json({ error: "type et text requis" });
     }
 
     const item = {
-      id: crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString("hex"),
+      id: crypto.randomUUID(),
       type,
       text,
       language,
-      languageCodes,
-      metadata,
-      createdAt: new Date().toISOString(),
+      language_codes: languageCodes ? JSON.stringify(languageCodes) : null,
+      metadata: metadata ? JSON.stringify(metadata) : null,
     };
 
-    console.log("Adding item to history:", { id: item.id, type: item.type, textLength: item.text.length });
-    await addHistoryItem(item);
-    console.log("Item added successfully");
-    res.status(201).json(item);
+    const { rows } = await pool.query(
+      'INSERT INTO history (id, type, text, language, language_codes, metadata) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+      [item.id, item.type, item.text, item.language, item.language_codes, item.metadata]
+    );
+
+    res.status(201).json(rows[0]);
   } catch (error) {
     console.error("Add history error:", error);
     res.status(500).json({ error: `Erreur serveur: ${error.message}` });
@@ -547,7 +377,7 @@ app.post("/api/history", async (req, res) => {
 
 app.delete("/api/history", async (req, res) => {
   try {
-    await clearHistory();
+    await pool.query('DELETE FROM history');
     res.json({ message: "Historique effacé" });
   } catch (error) {
     console.error("Clear history error:", error);
@@ -558,14 +388,13 @@ app.delete("/api/history", async (req, res) => {
 app.get("/api/history/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const history = await readHistory();
-    const item = history.find((item) => item.id === id);
+    const { rows } = await pool.query('SELECT * FROM history WHERE id = $1', [id]);
 
-    if (!item) {
+    if (rows.length === 0) {
       return res.status(404).json({ error: "Item introuvable" });
     }
 
-    res.json(item);
+    res.json(rows[0]);
   } catch (error) {
     console.error("Get history item error:", error);
     res.status(500).json({ error: `Erreur serveur: ${error.message}` });
@@ -575,9 +404,9 @@ app.get("/api/history/:id", async (req, res) => {
 app.delete("/api/history/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const deleted = await deleteHistoryItem(id);
+    const { rowCount } = await pool.query('DELETE FROM history WHERE id = $1', [id]);
 
-    if (!deleted) {
+    if (rowCount === 0) {
       return res.status(404).json({ error: "Item introuvable" });
     }
 
@@ -590,8 +419,8 @@ app.delete("/api/history/:id", async (req, res) => {
 
 app.get("/api/history/export", async (req, res) => {
   try {
-    const history = await readHistory();
-    const json = JSON.stringify(history, null, 2);
+    const { rows } = await pool.query('SELECT * FROM history ORDER BY created_at DESC');
+    const json = JSON.stringify(rows, null, 2);
     
     res.setHeader("Content-Type", "application/json");
     res.setHeader(
@@ -606,6 +435,7 @@ app.get("/api/history/export", async (req, res) => {
 });
 
 app.post("/api/history/import", async (req, res) => {
+  const client = await pool.connect();
   try {
     const items = req.body;
 
@@ -613,25 +443,29 @@ app.post("/api/history/import", async (req, res) => {
       return res.status(400).json({ error: "Format JSON invalide: array attendu" });
     }
 
-    await importHistory(items);
+    await client.query('BEGIN');
+    for (const item of items) {
+      await client.query(
+        'INSERT INTO history (id, type, text, language, language_codes, metadata, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING',
+        [item.id, item.type, item.text, item.language, JSON.stringify(item.language_codes), JSON.stringify(item.metadata), item.created_at]
+      );
+    }
+    await client.query('COMMIT');
+    
     res.json({ message: "Historique importé avec succès" });
   } catch (error) {
+    await client.query('ROLLBACK');
     console.error("Import history error:", error);
     res.status(500).json({ error: `Erreur serveur: ${error.message}` });
+  } finally {
+    client.release();
   }
-});
-
-app.post("/api/translate", (req, res) => {
-  res.status(501).json({
-    error: "Fonctionnalité de traduction non configurée",
-    message: "Cette fonctionnalité nécessite une configuration supplémentaire.",
-  });
 });
 
 // Route de test /infos
 app.get("/api/infos", async (req, res) => {
   try {
-    const history = await readHistory();
+    const { rowCount } = await pool.query('SELECT 1 FROM history');
     const apiKey = await getApiKey();
     
     res.json({
@@ -641,8 +475,7 @@ app.get("/api/infos", async (req, res) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       history: {
-        count: history.length,
-        maxItems: MAX_ITEMS,
+        count: rowCount,
       },
       apiKey: {
         configured: !!apiKey,
@@ -661,7 +494,8 @@ app.get("/api/infos", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  await initializeDatabase();
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📊 Health check available at http://localhost:${PORT}/api/infos`);
 });
