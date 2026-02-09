@@ -47,16 +47,23 @@ const allowedOrigins = [
   "http://localhost:3000",
 ].filter(Boolean);
 
-app.use(cors({
+const corsOptions = {
+  credentials: true,
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1 || !process.env.FRONTEND_URL) {
+    // Si FRONTEND_URL n'est pas défini, on autorise tout pour les health checks
+    if (!process.env.FRONTEND_URL) {
+      return callback(null, true);
+    }
+    // Sinon, on applique la politique stricte
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
     }
   },
-  credentials: true,
-}));
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Configuration multer
