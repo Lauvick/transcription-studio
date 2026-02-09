@@ -214,6 +214,7 @@ app.post("/api/assemblyai/upload", upload.single("file"), async (req, res) => {
         "Content-Type": "application/octet-stream",
       },
       body: fileStream,
+      duplex: 'half', // Requis pour le streaming avec les versions récentes de Node.js
     });
 
     if (!uploadResponse.ok) {
