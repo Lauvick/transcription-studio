@@ -7,8 +7,10 @@ const cors = require("cors");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs").promises;
+const os = require("os");
 const crypto = require("crypto");
 const { Pool } = require('pg');
+const { createReadStream } = require("fs");
 
 // Configuration de la base de données
 const pool = new Pool({
@@ -50,11 +52,9 @@ const allowedOrigins = [
 const corsOptions = {
   credentials: true,
   origin: function (origin, callback) {
-    // Si FRONTEND_URL n'est pas défini, on autorise tout pour les health checks
     if (!process.env.FRONTEND_URL) {
       return callback(null, true);
     }
-    // Sinon, on applique la politique stricte
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -66,8 +66,8 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-// Configuration multer
-const upload = multer({ storage: multer.memoryStorage() });
+// Configuration multer pour le streaming (stockage temporaire sur disque)
+const upload = multer({ dest: os.tmpdir() });
 
 const ASSEMBLYAI_UPLOAD_URL = "https://api.assemblyai.com/v2/upload";
 const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com/v2/transcript";
@@ -191,7 +191,7 @@ app.post("/api/config/api-key", async (req, res) => {
   }
 });
 
-// Routes AssemblyAI
+// Route d'upload AssemblyAI (MODIFIÉE POUR LE STREAMING)
 app.post("/api/assemblyai/upload", upload.single("file"), async (req, res) => {
   const ASSEMBLYAI_API_KEY = await getApiKey();
   if (!ASSEMBLYAI_API_KEY) {
@@ -202,14 +202,18 @@ app.post("/api/assemblyai/upload", upload.single("file"), async (req, res) => {
     return res.status(400).json({ error: "Aucun fichier fourni" });
   }
 
+  const tempPath = req.file.path;
+
   try {
+    const fileStream = createReadStream(tempPath);
+
     const uploadResponse = await fetch(ASSEMBLYAI_UPLOAD_URL, {
       method: "POST",
       headers: {
         Authorization: ASSEMBLYAI_API_KEY,
         "Content-Type": "application/octet-stream",
       },
-      body: req.file.buffer,
+      body: fileStream,
     });
 
     if (!uploadResponse.ok) {
@@ -223,15 +227,24 @@ app.post("/api/assemblyai/upload", upload.single("file"), async (req, res) => {
       }
 
       return res.status(uploadResponse.status).json({
-        error: `Erreur upload AssemblyAI: ${uploadResponse.status}`,
+        error: `Erreur upload AssemblyAI: ${uploadResponse.statusText}`,
+        details: errorText,
       });
     }
 
     const data = await uploadResponse.json();
     res.json({ upload_url: data.upload_url });
+
   } catch (error) {
-    console.error("Upload error:", error);
-    res.status(500).json({ error: `Erreur serveur: ${error.message}` });
+    console.error("Upload stream error:", error);
+    res.status(500).json({ error: `Erreur serveur lors du streaming: ${error.message}` });
+  } finally {
+    // Nettoyer le fichier temporaire
+    try {
+      await fs.unlink(tempPath);
+    } catch (cleanupError) {
+      console.error("Erreur lors de la suppression du fichier temporaire:", cleanupError);
+    }
   }
 });
 
@@ -286,7 +299,7 @@ app.post("/api/assemblyai/transcripts", async (req, res) => {
       }
 
       return res.status(response.status).json({
-        error: `Erreur AssemblyAI: ${response.status}`,
+        error: `Erreur AssemblyAI: ${response.status}`
       });
     }
 
@@ -330,7 +343,7 @@ app.get("/api/assemblyai/transcripts/:id", async (req, res) => {
       }
 
       return res.status(response.status).json({
-        error: `Erreur AssemblyAI: ${response.status}`,
+        error: `Erreur AssemblyAI: ${response.status}`
       });
     }
 
