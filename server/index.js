@@ -50,20 +50,14 @@ const allowedOrigins = [
 const corsOptions = {
   credentials: true,
   origin: function (origin, callback) {
-    console.log("--- DÉBOGAGE CORS ---");
-    console.log("Origine reçue par le serveur:", origin);
-    console.log("URL configurée dans Railway (FRONTEND_URL):", process.env.FRONTEND_URL);
-    console.log("Liste des origines autorisées:", allowedOrigins);
-
+    // Si FRONTEND_URL n'est pas défini, on autorise tout pour les health checks
     if (!process.env.FRONTEND_URL) {
-      console.log("Verdict CORS: Autorisé (FRONTEND_URL non défini).");
       return callback(null, true);
     }
+    // Sinon, on applique la politique stricte
     if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-      console.log("Verdict CORS: Autorisé (l'origine est dans la liste).");
       callback(null, true);
     } else {
-      console.error("Verdict CORS: REFUSÉ.");
       callback(new Error("Not allowed by CORS"));
     }
   },
